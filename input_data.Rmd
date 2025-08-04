@@ -1,0 +1,70 @@
+---
+title: "input_data"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# activate library functions
+```{r message=FALSE}
+
+library(ggplot2)
+library(ggpattern)
+#library(ggpubr)
+library(expss)
+library(readr)
+library(readxl)
+library(writexl)
+library(skimr)
+library(tidyverse)  # includes: tidyr, dplyr, haven, readr, readxl, forcats, stringer, ggplot2. See all with tidyverse_packages()
+library(knitr)
+library(janitor)
+#install.packages("openxlsx")
+library(openxlsx)
+# install.packages("shinyaddins")
+# library(shinyaddins)
+
+```
+
+```{r eval=FALSE}
+# the purpose of this code is to input the stand data collected from the Arnot Forest (or other locations using the identical protocol).
+# The code will create simple stand summaries, but no details analyses.
+# The output summaries will be saved to a folder R/arnot_summary_output/filename(readme).xlsx
+# 
+# The original data are copied from BOX folder "Arnot Forest - Inventory Data and Projects/stand inventory data/data(entered)"
+# The original data are presented in two worksheets, one "overstory" and one "understory"
+
+
+
+### code 01
+### Create file path input and the output folder (code 01)
+```
+
+
+
+file paths, input and output
+```{r}
+
+
+file_path_input <- "C:\\Users\\pjs23\\Documents\\R\\arnot_forest_stand_analyses\\rawdata\\arnot_inventory_data_01aug2025.xlsx"
+
+
+
+output_folder <- "C:\\Users\\pjs23\\Documents\\R\\slash-wall-vegetation\\summary output\\"
+```
+
+
+```{r}
+
+overstory <- read_excel(file_path_input, sheet = "overstory", skip = 1) 
+
+understory <- read_excel(file_path_input, sheet = "understory", skip = 1) 
+
+table(veg_data$harvest, veg_data$trmt, veg_data$forest_type)
+
+
+```
+
