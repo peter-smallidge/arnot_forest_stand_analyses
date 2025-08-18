@@ -49,19 +49,156 @@ file paths, input and output
 ```{r}
 
 
-file_path_input <- "C:\\Users\\pjs23\\Documents\\R\\arnot_forest_stand_analyses\\rawdata\\arnot_inventory_data_01aug2025.xlsx"
+file_path_input <- "C:\\Users\\pjs23\\Documents\\R\\Arnot Stand Data\\rawdata\\arnot_inventory_data_01aug2025.xlsx"
 
 
 
-output_folder <- "C:\\Users\\pjs23\\Documents\\R\\slash-wall-vegetation\\summary output\\"
+output_folder <- "C:\\Users\\pjs23\\Documents\\R\\Arnot Stand Data\\summary_output\\"
 ```
 
 
 ```{r}
+spp_lookup <- read_csv("../species table.csv", skip = 1, col_names = c("spp_code", "spp_name"))  
+# reads the table of spp numeric to alpha
+# update the list of species codes within R/species table.csv
 
-overstory <- read_excel(file_path_input, sheet = "overstory", skip = 1) 
 
-understory <- read_excel(file_path_input, sheet = "understory", skip = 1) 
+raw_overstory <- read_excel(file_path_input, sheet = "overstory", skip = 1) %>% 
+    arrange(stand, growingseason, as.integer(point), spp)
+
+
+overstory_prep <- raw_overstory%>% 
+    mutate(
+    baf = 9.1,
+    point = as.character(point),
+    growingseason = as.character(growingseason),
+    spp = as.character(spp),
+    status = as.character(status),
+    crown = as.character(crown),
+    stand = str_replace_all(stand, "-", "_")
+    ) %>% 
+#convert species numeric to species alpha
+  left_join(spp_lookup, by = c("spp" = "spp_code")) %>%
+  mutate(
+    spp = coalesce(spp_name, spp),
+    spp = as.character(spp)
+  ) %>%
+  select(-spp_name) %>% 
+
+    mutate(
+    crown = case_when(
+        crown == "0" ~ "dead",
+        crown == "1" ~ "good",
+        crown == "2" ~ "fair",
+        crown == "3" ~ "poor",
+        TRUE ~ crown  # keep other values unchanged
+        ),
+    status = case_when(
+        status == "1" ~ "ags",
+        status == "2" ~ "ugs",
+        TRUE ~ status
+    ),
+    within16 = case_when(
+      status %in% c("ugs", "dead") | dbh < 6 | dbh > 12 ~ 0,
+      #(status != "ags") | (crown == "dead") & (dbh < 6 | dbh > 12) ~ 0,
+      TRUE ~ within16
+    ),
+        status = if_else(crown == "dead", "dead", status)
+    ) %>% 
+
+    mutate(
+        baf = 9.1,
+        ba = baf,
+        expansion = ba / (.005454 * dbh^2),  # use this to back calculate the 9.1BAF value of 2.75*dbh=radius
+        tpa = baf / ((0.005454 * dbh ^ 2)),
+        reserve_tpa = (43560 / (pi * (16^2))) * within16
+    ) %>% 
+#tpa = 43560 / (threshold distance^2 * pi)
+
+    arrange(stand, as.numeric(point), spp, dbh)
+    
+overstory <- overstory_prep %>% 
+    group_by(stand, point, spp) %>%  # values for each point
+    summarize(
+        growingseason = first(growingseason),
+        tree_count = n(),
+        sum_weighted = sum(dbh^2 * expansion),
+        sum_treearea = sum(expansion),
+        ba_sqft = sum(ba),
+        stems_acre = sum(tpa),
+        reserve_acre = sum(reserve_tpa),
+        .groups = "drop"
+    ) %>% 
+    mutate(
+        quad_dbh = sqrt(sum_weighted/sum_treearea)
+    ) %>% 
+    arrange(stand, as.numeric(point), spp, tree_count, stems_acre)
+
+
+table(overstory$stand, overstory$spp)
+
+
+
+stand_table <- overstory_prep %>% 
+  select(stand, point, growingseason, spp, dbh, tpa) %>% 
+  group_by(stand, growingseason, spp, dbh) %>% 
+  summarize(
+    tpa = mean(tpa),
+    .groups = "drop"
+  ) %>% 
+  mutate(dbh = as.numeric(dbh)) %>%   # ensure numeric
+  arrange(growingseason, stand, dbh) %>% 
+  mutate(dbh = factor(dbh, levels = sort(unique(dbh)))) %>%  # set factor levels in numeric order
+  pivot_wider(
+    id_cols = c(stand, growingseason, spp),
+    names_from = dbh,
+    values_from = tpa,
+    values_fill = 0
+  ) %>% 
+  { 
+    # reorder dbh_* columns numerically based on their numeric part
+    dbh_cols <- grep("^dbh_", names(.), value = TRUE)
+    ordered <- dbh_cols[order(as.numeric(sub("^dbh_", "", dbh_cols)))]
+    dplyr::select(., growingseason, stand, spp, dplyr::all_of(ordered))
+  } %>%
+  mutate(across(where(is.numeric), round, 0))  # round numeric columns
+
+
+
+stand_values <- overstory %>% 
+    group_by(stand, growingseason, spp) %>%  # averages across points
+    summarize(
+        tree_count = sum(tree_count),
+        ba_sqft = mean(ba_sqft),
+        stems_acre = mean(stems_acre),
+        quad_dbh = mean(quad_dbh),
+        .groups = "drop"
+    )
+
+     mutate_if(is.numeric, round, 1) %>% 
+    arrange(stand, growingseason,as.numeric(point), spp)
+       
+    
+
+    
+    
+
+    
+    
+    
+    
+    
+table(overstory$stand, overstory$growingseason) #review stands by growing season
+table(overstory$status, overstory$crown) # review status and crown. All status=dead should also be crown=dead
+table(overstory$stand, overstory$spp)
+table(overstory$within16, overstory$status) #run before executing the summarize code
+
+
+```
+
+
+```{r}
+understory <- read_excel(file_path_input, sheet = "understory", skip = 4) 
 
 table(veg_data$harvest, veg_data$trmt, veg_data$forest_type)
 
