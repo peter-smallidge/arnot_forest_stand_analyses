@@ -154,7 +154,11 @@ overstory_prep <- raw_overstory%>%
         tpa = baf / ((0.005454 * dbh ^ 2)),
         reserve_tpa = (43560 / (pi * (16^2))) * within16 # the number of potential reserve trees per acre
     ) %>% 
-#tpa = 43560 / (threshold distance^2 * pi)
+    
+    mutate(
+        status = factor(status, levels = c("ags", "ugs", "dead") # to force arrange as ags, ugs, dead sequence
+                        )) %>%
+
 
 #    arrange(stand, as.numeric(point), spp, dbh)
 
@@ -168,17 +172,19 @@ overstory_prep <- raw_overstory%>%
 overstory <- overstory_prep %>% 
     group_by(stand, point, spp, status) %>%  # values for each point
     summarize(
+        type = first(type),
         growingseason = first(growingseason),
         tree_count = n(), # the number of trees measured during sampling
         sum_weighted = sum(dbh^2 * expansion),
         sum_treearea = sum(expansion),
         ba_sqft = sum(ba),
         stems_acre = sum(tpa),
-        reserve_acre = sum(reserve_tpa),
+        reserve_tpa = sum(reserve_tpa),
         .groups = "drop"
     ) %>% 
     mutate(
-        quad_dbh = sqrt(sum_weighted/sum_treearea)
+        quad_dbh = sqrt(sum_weighted/sum_treearea),
+        dbhq2 = sqrt((ba_sqft/stems_acre)/0.005454)  # this is the same value as the var="quad_dbh"
     ) %>% 
     arrange(stand, as.numeric(point), spp, tree_count, stems_acre)
 
@@ -227,7 +233,7 @@ stand_table <- overstory_prep %>%
 #write stand tables to unique worksheets
 ```{r}
 # define file path
-out_file <- file.path("C:\\Users\\pjs23\\Documents\\R\\Arnot Stand Data\\summary_output\\",
+out_file <- file.path("C:\\Users\\pjs23\\Documents\\R\\arnot_forest_stand_analyses\\summary_output\\",
                       "stand_table.xlsx")
 
 # create workbook
@@ -256,24 +262,40 @@ saveWorkbook(wb, out_file, overwrite = TRUE)
 
 #calculate stand values by status (ags, ugs)
 ```{r}
+n_points <- overstory %>%
+  distinct(stand, point) %>%
+  count(stand, name = "n_points")
+
 stand_values01 <- overstory %>% 
+    left_join(n_points, by = "stand") %>% 
     group_by(stand, growingseason, spp, status) %>%  # averages across points
     summarize(
-        tree_count = sum(tree_count),
-        ba_sqft_spp = mean(ba_sqft),
-        stems_acre_spp = mean(stems_acre),
-        quad_dbh_spp =  sqrt(((ba_sqft_spp) / (stems_acre_spp)) / 0.005454),
+        type = first(type),
+ #       tree_count = sum(tree_count),
+        ba_sqft_spp = sum(ba_sqft) / first(n_points),
+        stems_acre_spp = sum (stems_acre) / first(n_points),
+        quad_dbh_spp =  sqrt( (ba_sqft_spp / stems_acre_spp) / 0.005454),  #        dbhq2 = sqrt((ba_sqft/stems_acre)/0.005454) 
+
         .groups = "drop"
     ) %>% 
+    mutate(
+        file = "Arnot/input_data.Rmd",
+        df = "stand_values01",
+        size = "all"
+    ) %>% 
+    arrange(stand, status, spp) %>% 
+    select(file, df, size, growingseason, stand, spp, status, type, ba_sqft_spp, stems_acre_spp, quad_dbh_spp) %>% 
 
-     mutate_if(is.numeric, round, 1) %>% 
-    arrange(stand, growingseason, spp)
-       
+    mutate_if(is.numeric, round, 1)
 
-#calculate the stand-level DBHq
+```
+
+#calculate the stand-level (all stems) DBHq
+```{r}
 stand_values02 <- overstory %>% 
-    group_by(stand, growingseason, point, status) %>% #average across species
+    group_by(stand, growingseason, type, point, status) %>% #average across species
     summarize(
+#        type = first(type),
         ba_sum_pt = sum(ba_sqft),
         stems_acre_pt = sum(stems_acre),
         tree_count_pt = sum(tree_count),
@@ -281,38 +303,28 @@ stand_values02 <- overstory %>%
     ) %>% 
     arrange(stand, growingseason, as.numeric(point)) %>% 
     
-    group_by(stand, growingseason, status) %>% 
+    left_join(n_points, by = "stand") %>% 
+    
+    group_by(stand, growingseason, type, status) %>% 
     summarize(
-        ba_acre_stand = mean(ba_sum_pt),
-        TPA_stand = mean(stems_acre_pt),
-        quad_dbh_stand =  sqrt(((ba_acre_stand) / (TPA_stand)) / 0.005454),
+#        type = first(type),
+        ba_acre_stand = sum(ba_sum_pt) / first(n_points),
+        TPA_stand = sum(stems_acre_pt) / first(n_points),
+        quad_dbh_stand =  sqrt( (ba_acre_stand / TPA_stand) / 0.005454),
         .groups = "drop"
     ) %>% 
     
     mutate_if(is.numeric, round, 1)
+```
 
-#caluclate stand values for commercial species only
+#calculate stand values for commercial species only
+
+```{r}
 stand_values_comm <- overstory %>% 
-        mutate(
-        type = "blank"
-        ) %>% 
-    mutate(type = case_when(
-    spp %in% c("ba", "bc", "bih", "bl", "co", "he", "ohw", "rm", "ro", "sa", 
-                "ph","sh", "sm", "wa", "wo", "wp", "yb", "yp", "comm_sdl") ~ "commercial",
-    
-    spp %in% c("sb") ~ "sb",
-    
-    spp %in% c("ab", "eh", "pc", "stm", "toh", "au" ) ~ "interfere",
-
-    spp %in% c("app", "bta", "haw", "brs", "dws", "ec", "la", "ns", "cu", "erc", "ows","amc",
-               "pb", "gb", "qa", "rp", "scp", "smc", "svb", "wh", "wi", "viac", "visp" ) ~ "diversity",
-
-    spp %in% c("ah", "cc", "unk", "sp", "empty" ) ~ "other",
-    TRUE ~ type,  # Keeps the existing value of "type" for all other cases
-    )) %>% 
     filter(type == "commercial") %>% 
      group_by(stand, growingseason, point, status) %>% #average across species
     summarize(
+        type = first(type),
         ba_sum_pt = sum(ba_sqft),
         stems_acre_pt = sum(stems_acre),
         tree_count_pt = sum(tree_count),
@@ -320,26 +332,89 @@ stand_values_comm <- overstory %>%
     ) %>% 
     arrange(stand, growingseason, as.numeric(point)) %>% 
     
+    left_join(n_points, by = "stand") %>% 
+    
     group_by(stand, growingseason, status) %>% 
     summarize(
-        ba_acre_stand_comm = mean(ba_sum_pt),
-        TPA_stand_comm = mean(stems_acre_pt),
+        type = first(type),
+        ba_acre_stand_comm = sum(ba_sum_pt) / first(n_points),
+        TPA_stand_comm = sum(stems_acre_pt) / first(n_points),
         quad_dbh_stand_comm =  sqrt(((ba_acre_stand_comm) / (TPA_stand_comm)) / 0.005454),
         .groups = "drop"
     ) %>% 
      mutate_if(is.numeric, round, 1)
- 
 
 table(stand_values_comm$type)
 
-stand_values <- stand_values01 %>% 
-    left_join(stand_values_comm, by = c("stand", "growingseason", "status")) %>% 
-    left_join(stand_values02, by = c("stand", "growingseason", "status"))
+```
+
+#MERCHANTABLE
+```{r}
+#calculate stand values for merchantable species only
+stand_values_merch <- overstory_prep %>% 
+    filter(dbh > 12) %>% 
+
+# code for "df = overstory"
+    group_by(stand, point, type, status) %>%  # values for each point
+    summarize(
+        type = first(type),
+        growingseason = first(growingseason),
+        tree_count = n(), # the number of trees measured during sampling
+        sum_weighted = sum(dbh^2 * expansion),
+        sum_treearea = sum(expansion),
+        ba_sqft = sum(ba),
+        stems_acre = sum(tpa),
+        reserve_tpa = sum(reserve_tpa),
+        .groups = "drop"
+    ) %>% 
+    mutate(
+        quad_dbh = sqrt(sum_weighted/sum_treearea),
+        dbhq2 = sqrt((ba_sqft/stems_acre)/0.005454)  # this is the same value as the var="quad_dbh"
+    ) %>% 
+
+    group_by(stand, growingseason, point, type, status) %>% #average across species
+    summarize(
+        type = first(type),
+        ba_sum_pt = sum(ba_sqft),
+        stems_acre_pt = sum(stems_acre),
+        tree_count_pt = sum(tree_count),
+        .groups = "drop"
+    ) %>% 
+
+    left_join(n_points, by = "stand") %>% 
+    
+    group_by(stand, growingseason, type, status) %>% 
+    summarize(
+        ba_acre_stand_merch = sum(ba_sum_pt) / first(n_points),
+        TPA_stand_merch = sum(stems_acre_pt) / first(n_points),
+        quad_dbh_stand_merch =  sqrt(((ba_acre_stand_merch) / (TPA_stand_merch)) / 0.005454),
+        .groups = "drop"
+    ) %>% 
+     mutate_if(is.numeric, round, 1)
+```
+
+# merge all sizes by type and merchantable by type
+```{r}
+stand_values <- stand_values02 %>% 
+#    left_join(stand_values_comm, by = c("stand", "growingseason", "status")) %>% #commercial spp only
+#    left_join(stand_values02, by = c("stand", "growingseason", "status")) %>%  #all stems, ignore species
+    left_join(stand_values_merch, by = c("stand", "growingseason", "type", "status")) %>%  # all stems and spp >12" dbh
+    mutate(
+        file = "Arnot/input_data.Rmd",
+        df = "stand_values",
+        size = "all, merch >12"
+    ) %>% 
+    arrange(stand, status, type) %>% 
+    select(file, df, size, growingseason, stand,  status, type, ba_acre_stand, TPA_stand, quad_dbh_stand,
+           ba_acre_stand_merch, TPA_stand_merch, quad_dbh_stand_merch) %>% 
+    mutate(across(where(is.numeric), ~replace_na(., 0))) %>% 
+    mutate_if(is.numeric, round, 1)
     
 
+    #stand_values01 %>% # all species and all sizes
     
-    
-    
+# stand by spp by status all sizes = df_stand_values01
+# stand by type by status ( all size & merch)  df=stand_values
     
     
 table(overstory$stand, overstory$growingseason) #review stands by growing season
@@ -349,6 +424,58 @@ table(overstory$within16, overstory$status) #run before executing the summarize 
 
 
 ```
+
+#write data to individual worksheets, combine the spp data with the type data
+```{r}
+out_file2 <- file.path(
+  "C:\\Users\\pjs23\\Documents\\R\\arnot_forest_stand_analyses\\summary_output\\",
+  "stand_summary.xlsx"
+)
+
+common_stands <- intersect(stand_values01$stand, stand_values$stand)
+
+wb <- createWorkbook()
+
+for(s in common_stands) {
+  
+  addWorksheet(wb, sheetName = s)
+  
+  # Filter each dataset for this stand
+  stand_values01_s <- stand_values01 %>% filter(stand == s)
+  stand_values_s <- stand_values %>% filter(stand == s)
+  
+  # Ensure empty datasets are still included with column names
+  if(nrow(stand_values01_s) == 0){
+    stand_values01_s <- stand_values01_s[0,]  # empty df with same columns
+  }
+  if(nrow(stand_values_s) == 0){
+    stand_values_s <- stand_values_s[0,]
+  }
+  
+  # Combine data vertically with a source column
+  combined <- bind_rows(
+    stand_values01_s %>% mutate(source = "stand_values01"),
+    stand_values_s %>% mutate(source = "stand_values")
+  )
+  
+  # Write to Excel
+  writeData(wb, sheet = s, combined)
+}
+
+saveWorkbook(wb, out_file2, overwrite = TRUE)
+
+
+
+
+
+
+
+
+
+
+
+```
+
 
 
 ```{r}
