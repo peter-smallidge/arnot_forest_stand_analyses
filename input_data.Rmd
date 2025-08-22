@@ -58,11 +58,51 @@ output_folder <- "C:\\Users\\pjs23\\Documents\\R\\Arnot Stand Data\\summary_outp
 
 
 ```{r}
-spp_lookup <- read_csv("../species table.csv", skip = 1, col_names = c("spp_code", "spp_name"))  
-# reads the table of spp numeric to alpha
+
+spp_type_lookup <- readr::read_csv(
+  "C:/Users/pjs23/Documents/R/species and type table.csv",
+  col_types = readr::cols(
+    spp_code = readr::col_character(),
+    spp_name = readr::col_character(),
+    spp_type = readr::col_character()
+  )
+) %>%
+  mutate(across(everything(), str_trim)) %>% 
+    rename(
+        spp = spp_code,
+        type = spp_type
+    )
+
+# reads the table of spp numeric to alpha and "type"
 # update the list of species codes within R/species table.csv
 
+"C:\Users\pjs23\Documents\R\species and type table.csv"
 
+spp_type <- read_csv("../species type table.csv", skip = 1, col_names = c("spp_code", "spp_name", "type")) 
+
+spp_type_table <- tibble::tibble(
+  spp = c(
+    "ba","bc","bih","bl","co","he","ohw","rm","ro","sa",
+    "ph","sh","sm","wa","wo","wp","yb","yp","comm_sdl",
+    "sb",
+    "ab","eh","pc","stm","toh","au",
+    "app","bta","haw","brs","dws","ec","la","ns","cu","erc","ows","amc",
+    "pb","gb","qa","rp","scp","smc","svb","wh","wi","viac","visp",
+    "ah","cc","unk","sp","empty"
+  ),
+  type = c(
+    rep("commercial", 19),
+    "sb",
+    rep("interfere", 6),
+    rep("diversity", 22),
+    rep("other", 5)
+  )
+)
+
+```
+
+
+```{r}
 raw_overstory <- read_excel(file_path_input, sheet = "overstory", skip = 1) %>% 
     arrange(stand, growingseason, as.integer(point), spp)
 
@@ -77,8 +117,9 @@ overstory_prep <- raw_overstory%>%
     crown = as.character(crown),
     stand = str_replace_all(stand, "-", "_")
     ) %>% 
+    
 #convert species numeric to species alpha
-  left_join(spp_lookup, by = c("spp" = "spp_code")) %>%
+  left_join(spp_type_lookup, by = c("spp")) %>%
   mutate(
     spp = coalesce(spp_name, spp),
     spp = as.character(spp)
@@ -109,19 +150,26 @@ overstory_prep <- raw_overstory%>%
     mutate(
         baf = 9.1,
         ba = baf,
-        expansion = ba / (.005454 * dbh^2),  # use this to back calculate the 9.1BAF value of 2.75*dbh=radius
+        expansion = ba / (.005454 * dbh^2),  # (I'm not sure what this is doing) Maybe use this to back calculate the 9.1BAF value of 2.75*dbh=radius
         tpa = baf / ((0.005454 * dbh ^ 2)),
-        reserve_tpa = (43560 / (pi * (16^2))) * within16
+        reserve_tpa = (43560 / (pi * (16^2))) * within16 # the number of potential reserve trees per acre
     ) %>% 
 #tpa = 43560 / (threshold distance^2 * pi)
 
-    arrange(stand, as.numeric(point), spp, dbh)
-    
+#    arrange(stand, as.numeric(point), spp, dbh)
+
+     arrange(stand, spp, dbh, as.numeric(point)) #to assess the calculation of tree_count in df=overstory. confirmed 18aug2025
+
+#   tree_count is the number of stems sampled by species as portrayed in df=stand_values
+
+
+#need to calculate metrics for crown condition
+
 overstory <- overstory_prep %>% 
-    group_by(stand, point, spp) %>%  # values for each point
+    group_by(stand, point, spp, status) %>%  # values for each point
     summarize(
         growingseason = first(growingseason),
-        tree_count = n(),
+        tree_count = n(), # the number of trees measured during sampling
         sum_weighted = sum(dbh^2 * expansion),
         sum_treearea = sum(expansion),
         ba_sqft = sum(ba),
@@ -136,51 +184,157 @@ overstory <- overstory_prep %>%
 
 
 table(overstory$stand, overstory$spp)
+#the numbers in the table are the number of points where the species is present
+```
 
-
-
+#create stand tables
+```{r}
 stand_table <- overstory_prep %>% 
   select(stand, point, growingseason, spp, dbh, tpa) %>% 
-  group_by(stand, growingseason, spp, dbh) %>% 
+  mutate(
+    # Bin dbh into 1-inch classes up to 30, then 30+
+    dbh_class = case_when(
+      dbh < 30 ~ paste0(floor(dbh), "_", floor(dbh) + 1),  # e.g., "10_11"
+      TRUE     ~ "30plus"
+    )
+  ) %>%
+  group_by(stand, growingseason, spp, dbh_class) %>% 
   summarize(
-    tpa = mean(tpa),
+    tpa = sum(tpa),
     .groups = "drop"
   ) %>% 
-  mutate(dbh = as.numeric(dbh)) %>%   # ensure numeric
-  arrange(growingseason, stand, dbh) %>% 
-  mutate(dbh = factor(dbh, levels = sort(unique(dbh)))) %>%  # set factor levels in numeric order
+  arrange(growingseason, stand, dbh_class) %>% 
   pivot_wider(
     id_cols = c(stand, growingseason, spp),
-    names_from = dbh,
+    names_from = dbh_class,
+    names_glue = "dbh_{dbh_class}",
     values_from = tpa,
     values_fill = 0
-  ) %>% 
-  { 
-    # reorder dbh_* columns numerically based on their numeric part
+  ) %>%
+  # ---- reorder dbh columns numerically ----
+  {
     dbh_cols <- grep("^dbh_", names(.), value = TRUE)
-    ordered <- dbh_cols[order(as.numeric(sub("^dbh_", "", dbh_cols)))]
+    # Extract the first number from the class (e.g., "dbh_10_11" -> 10, "dbh_30plus" -> 30)
+    order_vals <- as.numeric(sub("dbh_(\\d+).*", "\\1", dbh_cols))
+    ordered <- dbh_cols[order(order_vals)]
     dplyr::select(., growingseason, stand, spp, dplyr::all_of(ordered))
   } %>%
-  mutate(across(where(is.numeric), round, 0))  # round numeric columns
+  # ---- change zeros to blanks ----
+  mutate(across(starts_with("dbh_"), ~ ifelse(.x == 0, " ", as.character(round(.x, 0)))))
+```
+
+
+#write stand tables to unique worksheets
+```{r}
+# define file path
+out_file <- file.path("C:\\Users\\pjs23\\Documents\\R\\Arnot Stand Data\\summary_output\\",
+                      "stand_table.xlsx")
+
+# create workbook
+wb <- createWorkbook()
+
+# loop through each stand and add as worksheet
+unique_stands <- unique(stand_table$stand)
+
+for (st in unique_stands) {
+  # filter for the stand
+  df_stand <- stand_table %>% filter(stand == st)
+  
+  # add worksheet with the stand name
+  addWorksheet(wb, sheetName = paste0("stand_", st))
+  
+  # write data into that worksheet
+  writeData(wb, sheet = paste0("stand_", st), x = df_stand)
+}
+
+# save workbook to your output folder
+saveWorkbook(wb, out_file, overwrite = TRUE)
+
+```
 
 
 
-stand_values <- overstory %>% 
-    group_by(stand, growingseason, spp) %>%  # averages across points
+#calculate stand values by status (ags, ugs)
+```{r}
+stand_values01 <- overstory %>% 
+    group_by(stand, growingseason, spp, status) %>%  # averages across points
     summarize(
         tree_count = sum(tree_count),
-        ba_sqft = mean(ba_sqft),
-        stems_acre = mean(stems_acre),
-        quad_dbh = mean(quad_dbh),
+        ba_sqft_spp = mean(ba_sqft),
+        stems_acre_spp = mean(stems_acre),
+        quad_dbh_spp =  sqrt(((ba_sqft_spp) / (stems_acre_spp)) / 0.005454),
         .groups = "drop"
-    )
+    ) %>% 
 
      mutate_if(is.numeric, round, 1) %>% 
-    arrange(stand, growingseason,as.numeric(point), spp)
+    arrange(stand, growingseason, spp)
        
-    
 
+#calculate the stand-level DBHq
+stand_values02 <- overstory %>% 
+    group_by(stand, growingseason, point, status) %>% #average across species
+    summarize(
+        ba_sum_pt = sum(ba_sqft),
+        stems_acre_pt = sum(stems_acre),
+        tree_count_pt = sum(tree_count),
+        .groups = "drop"
+    ) %>% 
+    arrange(stand, growingseason, as.numeric(point)) %>% 
     
+    group_by(stand, growingseason, status) %>% 
+    summarize(
+        ba_acre_stand = mean(ba_sum_pt),
+        TPA_stand = mean(stems_acre_pt),
+        quad_dbh_stand =  sqrt(((ba_acre_stand) / (TPA_stand)) / 0.005454),
+        .groups = "drop"
+    ) %>% 
+    
+    mutate_if(is.numeric, round, 1)
+
+#caluclate stand values for commercial species only
+stand_values_comm <- overstory %>% 
+        mutate(
+        type = "blank"
+        ) %>% 
+    mutate(type = case_when(
+    spp %in% c("ba", "bc", "bih", "bl", "co", "he", "ohw", "rm", "ro", "sa", 
+                "ph","sh", "sm", "wa", "wo", "wp", "yb", "yp", "comm_sdl") ~ "commercial",
+    
+    spp %in% c("sb") ~ "sb",
+    
+    spp %in% c("ab", "eh", "pc", "stm", "toh", "au" ) ~ "interfere",
+
+    spp %in% c("app", "bta", "haw", "brs", "dws", "ec", "la", "ns", "cu", "erc", "ows","amc",
+               "pb", "gb", "qa", "rp", "scp", "smc", "svb", "wh", "wi", "viac", "visp" ) ~ "diversity",
+
+    spp %in% c("ah", "cc", "unk", "sp", "empty" ) ~ "other",
+    TRUE ~ type,  # Keeps the existing value of "type" for all other cases
+    )) %>% 
+    filter(type == "commercial") %>% 
+     group_by(stand, growingseason, point, status) %>% #average across species
+    summarize(
+        ba_sum_pt = sum(ba_sqft),
+        stems_acre_pt = sum(stems_acre),
+        tree_count_pt = sum(tree_count),
+        .groups = "drop"
+    ) %>% 
+    arrange(stand, growingseason, as.numeric(point)) %>% 
+    
+    group_by(stand, growingseason, status) %>% 
+    summarize(
+        ba_acre_stand_comm = mean(ba_sum_pt),
+        TPA_stand_comm = mean(stems_acre_pt),
+        quad_dbh_stand_comm =  sqrt(((ba_acre_stand_comm) / (TPA_stand_comm)) / 0.005454),
+        .groups = "drop"
+    ) %>% 
+     mutate_if(is.numeric, round, 1)
+ 
+
+table(stand_values_comm$type)
+
+stand_values <- stand_values01 %>% 
+    left_join(stand_values_comm, by = c("stand", "growingseason", "status")) %>% 
+    left_join(stand_values02, by = c("stand", "growingseason", "status"))
     
 
     
